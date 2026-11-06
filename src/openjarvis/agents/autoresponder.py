@@ -6,6 +6,8 @@ the owner's behalf — e.g. while they are away, asleep, or busy.
 
 Decision pipeline for every inbound message (first match wins):
 
+0. message written by the owner        -> no reply; starts the cooldown for
+                                          that chat (owner is active there)
 1. responder paused / disabled         -> no reply
 2. empty message                       -> no reply
 3. sender ignored, blocked, or not in the allowlist -> no reply
@@ -122,6 +124,10 @@ class AutoResponderConfig:
         Text added around every reply (e.g. ``"[auto-reply] "``).
     max_reply_chars:
         Replies longer than this are truncated.
+    quiet_after_owner_reply:
+        When the owner writes in a chat themselves (channels flag this with
+        ``metadata["from_owner"]``, e.g. Telegram Business), start that
+        chat's cooldown so the responder does not talk over them.
     """
 
     enabled: bool = True
@@ -141,6 +147,7 @@ class AutoResponderConfig:
     reply_prefix: str = ""
     reply_suffix: str = ""
     max_reply_chars: int = 1000
+    quiet_after_owner_reply: bool = True
 
     def __post_init__(self) -> None:
         if self.active_hours is not None:
@@ -341,6 +348,8 @@ class AutoResponderAgent:
         """
         cfg = self.config
         text = (msg.content or "").strip()
+        if msg.metadata.get("from_owner"):
+            return AutoReplyDecision(None, "owner_message")
         if self._paused or not cfg.enabled:
             return AutoReplyDecision(None, "paused")
         if not text:
@@ -431,9 +440,28 @@ class AutoResponderAgent:
             self._pool.submit(self.process, msg)
         return None
 
+    @staticmethod
+    def _reply_metadata(
+        msg: ChannelMessage, decision: AutoReplyDecision
+    ) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {"autoresponder": True, "reason": decision.reason}
+        # Route the reply through the same Telegram Business connection
+        # (i.e. from the owner's personal account) the message arrived on.
+        connection_id = msg.metadata.get("business_connection_id")
+        if connection_id:
+            metadata["business_connection_id"] = connection_id
+        return metadata
+
     def process(self, msg: ChannelMessage) -> AutoReplyDecision:
         """Decide on *msg*, send the reply, and update state."""
         key = self._conversation_key(msg)
+        if msg.metadata.get("from_owner"):
+            if msg.content:
+                self._record(key, Message(role=Role.ASSISTANT, content=msg.content))
+            if self.config.quiet_after_owner_reply:
+                with self._lock:
+                    self._last_reply[key] = self._clock()
+            return AutoReplyDecision(None, "owner_message")
         if msg.content and msg.sender not in self.config.ignore_senders:
             self._record(
                 key, Message(role=Role.USER, content=msg.content, name=msg.sender)
@@ -458,7 +486,7 @@ class AutoResponderAgent:
                 msg.conversation_id or msg.sender,
                 reply,
                 conversation_id=msg.message_id,
-                metadata={"autoresponder": True, "reason": decision.reason},
+                metadata=self._reply_metadata(msg, decision),
             )
         except Exception:  # noqa: BLE001
             logger.exception("AutoResponder failed to send reply")

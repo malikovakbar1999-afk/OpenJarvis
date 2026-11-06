@@ -5,8 +5,11 @@ Usage:
     python examples/messaging_hub/autoresponder.py --demo            # rules only
     python examples/messaging_hub/autoresponder.py --demo --llm      # + local LLM
     python examples/messaging_hub/autoresponder.py --telegram        # live bot
+    python examples/messaging_hub/autoresponder.py --telegram --business
 
 ``--telegram`` needs ``TELEGRAM_BOT_TOKEN`` in the environment.
+``--business`` also answers chats of the Telegram (Premium) account the bot
+is connected to under Settings -> Telegram Business -> Chatbots.
 """
 
 from __future__ import annotations
@@ -102,10 +105,22 @@ class JarvisAdapter:
 @click.command()
 @click.option("--demo", is_flag=True, help="Run on sample messages.")
 @click.option("--telegram", is_flag=True, help="Run as a live Telegram bot.")
+@click.option(
+    "--business",
+    is_flag=True,
+    help="Also answer your personal chats via Telegram Business.",
+)
 @click.option("--llm", is_flag=True, help="Generate replies with an LLM.")
 @click.option("--model", default="qwen3:8b", show_default=True)
 @click.option("--engine", "engine_key", default="ollama", show_default=True)
-def main(demo: bool, telegram: bool, llm: bool, model: str, engine_key: str) -> None:
+def main(
+    demo: bool,
+    telegram: bool,
+    business: bool,
+    llm: bool,
+    model: str,
+    engine_key: str,
+) -> None:
     agent = JarvisAdapter(model, engine_key) if llm else None
 
     def notify(msg: ChannelMessage) -> None:
@@ -114,7 +129,7 @@ def main(demo: bool, telegram: bool, llm: bool, model: str, engine_key: str) -> 
     if telegram:
         from openjarvis.channels.telegram import TelegramChannel
 
-        channel = TelegramChannel()
+        channel = TelegramChannel(business=business)
         responder = AutoResponderAgent(channel, CONFIG, agent=agent, on_urgent=notify)
         channel.connect()
         click.echo("Auto-responder running on Telegram. Ctrl+C to stop.")

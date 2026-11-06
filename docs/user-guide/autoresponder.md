@@ -24,6 +24,7 @@ because it only relies on the common `BaseChannel` interface.
 
 ## Decision order
 
+0. written by you (`metadata["from_owner"]`) → no reply; quiets that chat for the cooldown
 1. paused / disabled → no reply
 2. empty message → no reply
 3. sender filtered → no reply
@@ -84,10 +85,53 @@ config = AutoResponderConfig.from_dict(toml_data["autoresponder"])
 Use `responder.decide(msg)` to preview a decision without sending, and
 `responder.pause()` / `responder.resume()` to toggle it.
 
+## Telegram Business: answer your personal chats
+
+A regular bot only sees messages sent *to the bot*. With
+[Telegram Business](https://core.telegram.org/bots/api#business-connection)
+(requires Telegram Premium) you connect the bot to your own account and it
+answers people who write to **you**, with replies sent from your account.
+
+1. In [@BotFather](https://t.me/BotFather): `/mybots` → your bot →
+   *Bot Settings* → *Business Mode* → turn it on.
+2. In Telegram on your account: *Settings* → *Telegram Business* →
+   *Chatbots* → enter the bot's username, choose which chats it may access,
+   and allow it to reply to messages.
+3. Enable business mode in the channel:
+
+```python
+channel = TelegramChannel(business=True)   # or TELEGRAM_BUSINESS=1
+```
+
+```toml
+[channel.telegram]
+business = true
+```
+
+How it behaves:
+
+- Messages from your contacts arrive with
+  `metadata["business_connection_id"]` and `metadata["from_owner"] = False`;
+  replies automatically go out through the same business connection.
+- Messages **you** write in those chats arrive with `from_owner = True`.
+  The responder never answers them and, with `quiet_after_owner_reply`
+  (on by default), stays quiet in that chat for `cooldown_seconds` so it
+  doesn't talk over you. Urgent messages are still answered.
+- Messages the bot itself sent on your behalf are dropped, so auto-replies
+  never trigger more auto-replies.
+- `allowed_chat_ids` also applies to business chats (the chat id is the
+  contact's user id).
+
 ## Example
 
 ```bash
 python examples/messaging_hub/autoresponder.py --demo          # rules only
 python examples/messaging_hub/autoresponder.py --demo --llm    # + local LLM
 python examples/messaging_hub/autoresponder.py --telegram      # live bot
+```
+
+To answer your personal Telegram chats as well (see Telegram Business above):
+
+```bash
+TELEGRAM_BOT_TOKEN=... python examples/messaging_hub/autoresponder.py --telegram --business
 ```

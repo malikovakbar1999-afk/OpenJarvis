@@ -20,6 +20,8 @@ from openjarvis.core.registry import ChannelRegistry
 
 logger = logging.getLogger(__name__)
 
+_BUSINESS_ALLOWED_UPDATES = ("message", "business_connection", "business_message")
+
 
 @ChannelRegistry.register("telegram")
 class TelegramChannel(BaseChannel):
@@ -33,6 +35,13 @@ class TelegramChannel(BaseChannel):
         Comma-separated list of chat IDs allowed to interact.
     parse_mode:
         Message parse mode (``Markdown``, ``HTML``, etc.).
+    business:
+        Also receive and answer messages from Telegram Business chats. When
+        the bot is connected to a Telegram (Premium) account under
+        *Settings → Telegram Business → Chatbots*, messages people send to
+        that personal account are delivered here as well, and replies are
+        sent from the account itself. Falls back to the
+        ``TELEGRAM_BUSINESS`` env var (``1``/``true``/``yes``).
     bus:
         Optional event bus for publishing channel events.
     """
@@ -45,9 +54,21 @@ class TelegramChannel(BaseChannel):
         *,
         allowed_chat_ids: str = "",
         parse_mode: str = "Markdown",
+        business: Optional[bool] = None,
         bus: Optional[EventBus] = None,
     ) -> None:
         self._token = bot_token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        if business is None:
+            business = os.environ.get("TELEGRAM_BUSINESS", "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+            }
+        self._business = bool(business)
+        # chat id -> business connection id of the latest business message
+        # from that chat, so plain ``send(chat_id, ...)`` replies go out
+        # through the owner's account.
+        self._business_chats: Dict[str, str] = {}
         self._allowed_chat_ids = allowed_chat_ids
         self._parse_mode = parse_mode
         self._bus = bus
@@ -188,11 +209,16 @@ class TelegramChannel(BaseChannel):
                 # success path below and report a message that was never
                 # transmitted (#783).
                 return False
+            business_connection_id = (metadata or {}).get(
+                "business_connection_id"
+            ) or self._business_chats.get(str(chat_id), "")
             for chunk in chunks:
                 payload: Dict[str, Any] = {
                     "chat_id": chat_id,
                     "text": chunk,
                 }
+                if business_connection_id:
+                    payload["business_connection_id"] = business_connection_id
                 if self._parse_mode:
                     payload["parse_mode"] = self._parse_mode
                 if reply_to:
@@ -341,8 +367,13 @@ class TelegramChannel(BaseChannel):
                 ):
                     return
 
+            polling_kwargs: Dict[str, Any] = {"drop_pending_updates": True}
+            if self._business:
+                # Business updates must be requested explicitly: Telegram
+                # otherwise reuses whatever allowed_updates was set last.
+                polling_kwargs["allowed_updates"] = list(_BUSINESS_ALLOWED_UPDATES)
             if not await self._run_stage_until_stopped(
-                updater.start_polling(drop_pending_updates=True),
+                updater.start_polling(**polling_kwargs),
                 async_stop_event,
             ):
                 return
@@ -385,15 +416,22 @@ class TelegramChannel(BaseChannel):
 
             async def _handle_msg(update, context):
                 msg = update.message
-                if msg is None:
+                if msg is not None:
+                    cm = ChannelMessage(
+                        channel="telegram",
+                        sender=str(msg.from_user.id) if msg.from_user else "",
+                        content=msg.text or "",
+                        message_id=str(msg.message_id),
+                        conversation_id=str(msg.chat.id),
+                    )
+                elif self._business and (
+                    biz := getattr(update, "business_message", None)
+                ):
+                    cm = self._business_channel_message(biz)
+                    if cm is None:
+                        return
+                else:
                     return
-                cm = ChannelMessage(
-                    channel="telegram",
-                    sender=str(msg.from_user.id) if msg.from_user else "",
-                    content=msg.text or "",
-                    message_id=str(msg.message_id),
-                    conversation_id=str(msg.chat.id),
-                )
                 # Enforce allow-list when configured
                 if self._allowed_chat_ids:
                     _allowed = {
@@ -439,6 +477,35 @@ class TelegramChannel(BaseChannel):
                 loop.close()
             if self._stop_event.is_set():
                 self._status = ChannelStatus.DISCONNECTED
+
+    def _business_channel_message(self, msg: Any) -> Optional[ChannelMessage]:
+        """Convert a Telegram Business message, or ``None`` to drop it.
+
+        Business chats are private chats between the connected account's
+        owner and another person, so the chat id is the other person's user
+        id. A message whose sender differs from the chat id was therefore
+        written by the owner (``from_owner``). Messages the bot itself sent
+        on the owner's behalf (``sender_business_bot``) are dropped so
+        auto-replies never trigger further replies.
+        """
+        if getattr(msg, "sender_business_bot", None) is not None:
+            return None
+        connection_id = getattr(msg, "business_connection_id", None) or ""
+        chat_id = str(msg.chat.id)
+        sender = str(msg.from_user.id) if msg.from_user else ""
+        if connection_id:
+            self._business_chats[chat_id] = connection_id
+        return ChannelMessage(
+            channel="telegram",
+            sender=sender,
+            content=msg.text or "",
+            message_id=str(msg.message_id),
+            conversation_id=chat_id,
+            metadata={
+                "business_connection_id": connection_id,
+                "from_owner": bool(sender) and sender != chat_id,
+            },
+        )
 
     def _publish_sent(self, channel: str, content: str, conversation_id: str) -> None:
         """Publish a CHANNEL_MESSAGE_SENT event on the bus."""

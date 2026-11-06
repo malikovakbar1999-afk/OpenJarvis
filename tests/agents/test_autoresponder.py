@@ -345,3 +345,44 @@ def test_threaded_mode_replies():
     channel.simulate(_msg())
     responder.shutdown()
     assert len(channel.sent) == 1
+
+
+class TestOwnerMessages:
+    def _owner(self, text="I'm here", conv="chat-1"):
+        msg = _msg(text, sender="owner", conv=conv)
+        msg.metadata["from_owner"] = True
+        return msg
+
+    def test_owner_message_never_answered_and_quiets_chat(self):
+        channel, responder, clock = _make(AutoResponderConfig(cooldown_seconds=60))
+        assert responder.process(self._owner()).reason == "owner_message"
+        assert responder.process(_msg()).reason == "cooldown"
+        assert channel.sent == []
+        clock.t += 61
+        assert responder.process(_msg()).reason == "away_message"
+
+    def test_owner_message_recorded_as_assistant(self):
+        _, responder, _ = _make()
+        responder.process(self._owner("on my way"))
+        [entry] = responder.history("chat-1")
+        assert entry.role == Role.ASSISTANT and entry.content == "on my way"
+
+    def test_quiet_after_owner_reply_disabled(self):
+        cfg = AutoResponderConfig(quiet_after_owner_reply=False)
+        channel, responder, _ = _make(cfg)
+        responder.process(self._owner())
+        assert responder.process(_msg()).reason == "away_message"
+
+    def test_urgent_still_answered_after_owner_message(self):
+        cfg = AutoResponderConfig(urgent_keywords=["urgent"])
+        channel, responder, _ = _make(cfg)
+        responder.process(self._owner())
+        assert responder.process(_msg("urgent!")).reason == "urgent"
+
+
+def test_business_connection_forwarded_to_reply():
+    channel, responder, _ = _make()
+    msg = _msg()
+    msg.metadata.update({"business_connection_id": "bc-9", "from_owner": False})
+    responder.process(msg)
+    assert channel.sent[0]["metadata"]["business_connection_id"] == "bc-9"

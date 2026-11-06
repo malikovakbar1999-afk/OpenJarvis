@@ -1258,6 +1258,7 @@ class TelegramChannelConfig:
     bot_token: str = ""
     allowed_chat_ids: str = ""
     parse_mode: str = "Markdown"
+    business: bool = False
 
 
 @dataclass(slots=True)
@@ -2364,6 +2365,7 @@ default_agent = "simple"
 
 # [channel.telegram]
 # bot_token = ""  # Or set TELEGRAM_BOT_TOKEN env var
+# business = false  # Also answer Telegram Business chats (or TELEGRAM_BUSINESS=1)
 
 # [channel.discord]
 # bot_token = ""  # Or set DISCORD_BOT_TOKEN env var
