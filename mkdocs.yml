@@ -183,6 +183,7 @@ nav:
       - Pearl Mining on Apple Silicon: user-guide/mining-apple-silicon.md
       - Python SDK: user-guide/python-sdk.md
       - Morning Digest: user-guide/morning-digest.md
+      - Messenger Auto-Responder: user-guide/autoresponder.md
       - Deep Research: user-guide/deep-research.md
       - Code Assistant: user-guide/code-assistant.md
       - Scheduled Monitor: user-guide/scheduled-monitor.md
